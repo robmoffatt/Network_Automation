@@ -6,8 +6,8 @@ import requests
 from datetime import datetime
 from pysnmp.hlapi import *
 from colorama import Fore, Style, init
-import schedule
-import time
+# import schedule # Unused
+# import time # unused
 
 # Initialize Colorama
 init(autoreset=True)
@@ -193,8 +193,8 @@ def show_menu():
 # Main Program
 def main():
     devices = [
-        {"name": "Switch1", "ip": "192.168.1.1"},
-        {"name": "Router1", "ip": "192.168.1.2"}
+        {"name": "Router1", "ip": "192.168.1.1"},
+        {"name": "Switch1", "ip": "192.168.1.2"}
     ]
     
     while True:
