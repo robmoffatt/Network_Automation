@@ -169,3 +169,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+ansible_inventory.yml
+device_input.csv
+device_summary.json
+validation_results.csv
+
+.gitignore
