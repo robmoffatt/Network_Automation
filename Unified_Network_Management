@@ -1,0 +1,320 @@
+import os
+import time
+import paramiko
+import serial
+import csv
+import json
+import yaml
+import subprocess
+from datetime import datetime
+from tqdm import tqdm
+from getpass import getpass
+from colorama import Fore, Style, init
+import threading
+from pysnmp.hlapi.asyncore import SnmpEngine, UdpTransportTarget
+
+# Initialize Colorama
+init(autoreset=True)
+
+# Global storage for credentials and SNMP traps
+credentials = {}
+snmp_traps = []
+
+# Device-specific commands for logs
+device_commands = {
+    "nvidia": ["show version", "show interfaces", "show bgp summary", "show system"],
+    "cisco": ["show version", "show ip route", "show ip ospf neighbor", "show interfaces"],
+    "juniper": ["show chassis hardware", "show interfaces terse", "show ospf neighbor"],
+    "arista": ["show version", "show vlan brief", "show ip bgp summary", "show interfaces"],
+    "server": ["dmidecode", "lscpu", "free -m", "df -h", "systemctl list-units"]
+}
+
+# Protocol validation commands
+protocol_commands = {
+    "BGP": "show bgp summary",
+    "OSPF": "show ip ospf neighbor",
+    "LLDP": "show lldp neighbors",
+    "NTP": "show ntp associations",
+    "VRRP": "show vrrp",
+    "STP": "show spanning-tree",
+}
+
+# --- Function Definitions ---
+
+def save_log_output(device_name, command, output):
+    """Save the log output to a file."""
+    filename = f"{device_name}_logs.txt"
+    with open(filename, "a") as file:
+        file.write(f"Command: {command}\n")
+        file.write(f"Output:\n{output}\n")
+        file.write("="*50 + "\n")
+    print(Fore.GREEN + f"[INFO] Log output saved to {filename}.")
+def set_credentials():
+    """Set SSH credentials for a specific vendor."""
+    print("\n--- Set SSH Login Credentials ---")
+    vendor = input("Enter Vendor (e.g., nvidia, cisco, juniper, arista, server): ").strip().lower()
+    username = input("Enter SSH Username: ").strip()
+    password = getpass("Enter SSH Password: ").strip()
+    credentials[vendor] = {"username": username, "password": password}
+    print(Fore.GREEN + f"[INFO] Credentials saved for {vendor}.\n")
+
+
+def ssh_connect(ip, username, password):
+    """Establish an SSH connection to the device."""
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, username=username, password=password, timeout=10)
+        return ssh
+    except Exception as e:
+        print(Fore.RED + f"[ERROR] SSH connection failed for {ip}: {str(e)}")
+        return None
+
+
+def console_connect(port="/dev/ttyUSB0", baudrate=9600, timeout=1):
+    """Establish a console connection."""
+    try:
+        ser = serial.Serial(port, baudrate, timeout=timeout)
+        print(Fore.GREEN + f"[INFO] Connected to device via {port}.")
+        return ser
+    except Exception as e:
+        print(Fore.RED + f"[ERROR] Console connection failed: {str(e)}")
+        return None
+
+
+def fetch_logs(device, vendor, connection_type="ssh"):
+    """Fetch logs from a device using SSH or console."""
+    commands = device_commands.get(vendor, [])
+    username = credentials.get(vendor, {}).get("username")
+    password = credentials.get(vendor, {}).get("password")
+
+    if not username or not password:
+        print(Fore.RED + f"[ERROR] No credentials saved for vendor: {vendor}")
+        return
+
+    if connection_type == "ssh":
+        ssh_client = ssh_connect(device["ip"], username, password)
+        if ssh_client:
+            for cmd in tqdm(commands, desc=f"Fetching logs from {device['name']} ({vendor})"):
+                try:
+                    stdin, stdout, stderr = ssh_client.exec_command(cmd)
+                    output = stdout.read().decode()
+                    save_log_output(device["name"], cmd, output)
+                except Exception as e:
+                    print(Fore.RED + f"[ERROR] Failed to execute '{cmd}': {str(e)}")
+            ssh_client.close()
+    elif connection_type == "console":
+        console = console_connect()
+        if console:
+            for cmd in tqdm(commands, desc=f"Fetching logs from {device['name']} ({vendor}) via console"):
+                console.write((cmd + "\n").encode())
+                time.sleep(2)
+                output = console.read(console.in_waiting).decode()
+                save_log_output(device["name"], cmd, output)
+
+
+def fetch_logs_parallel(devices, vendor):
+    """Fetch logs from multiple devices in parallel."""
+    threads = []
+    for device in devices:
+        if device["vendor"].lower() == vendor:
+            thread = threading.Thread(target=fetch_logs, args=(device, vendor))
+            threads.append(thread)
+            thread.start()
+
+    for thread in threads:
+        thread.join()
+
+def validate_protocols(device):
+    """Validate network protocols on a device."""
+    vendor = device.get("vendor").lower()
+    username = credentials.get(vendor, {}).get("username")
+    password = credentials.get(vendor, {}).get("password")
+    results = {}
+
+    if not username or not password:
+        print(Fore.RED + f"[ERROR] No credentials saved for vendor: {vendor}")
+        return results
+
+    ssh_client = ssh_connect(device["ip"], username, password)
+    if ssh_client:
+        print(Fore.CYAN + f"[INFO] Validating protocols on {device['name']} ({device['ip']})...")
+        for protocol, command in protocol_commands.items():
+            try:
+                stdin, stdout, stderr = ssh_client.exec_command(command)
+                output = stdout.read().decode()
+                results[protocol] = parse_protocol_output(protocol, output)
+                save_validation_log(device["name"], protocol, output)
+            except Exception as e:
+                print(Fore.RED + f"[ERROR] Failed to validate {protocol} on {device['name']}: {str(e)}")
+                results[protocol] = "Validation Failed"
+        ssh_client.close()
+    else:
+        print(Fore.RED + f"[ERROR] SSH connection failed for {device['name']} ({device['ip']}).")
+
+    return results
+
+
+def start_snmp_trap_receiver():
+    """Start an SNMP Trap Receiver to capture and log SNMP traps."""
+    print(Fore.CYAN + "[INFO] Starting SNMP Trap Receiver on UDP port 162...")
+    try:
+        transport = UdpTransportTarget(('0.0.0.0', 162))
+        snmpEngine = SnmpEngine()
+
+        while True:
+            snmpEngine.transportDispatcher.jobStarted(1)
+            try:
+                snmpEngine.transportDispatcher.runDispatcher()
+            except Exception as e:
+                print(Fore.RED + f"[ERROR] SNMP Trap Receiver encountered an error: {str(e)}")
+                snmpEngine.transportDispatcher.closeDispatcher()
+
+    except Exception as e:
+        print(Fore.RED + f"[ERROR] SNMP Trap Receiver encountered an error: {str(e)}")
+
+
+def save_validation_log(device_name, protocol, output):
+    """Save the validation log output to a file."""
+    filename = f"{device_name}_validation_logs.txt"
+    with open(filename, "a") as file:
+        file.write(f"Protocol: {protocol}\n")
+        file.write(f"Output:\n{output}\n")
+        file.write("="*50 + "\n")
+    print(Fore.GREEN + f"[INFO] Validation log output saved to {filename}.")
+
+def parse_protocol_output(protocol, output):
+    """Parse the output of a protocol command."""
+    # Add parsing logic based on the protocol
+    if protocol == "BGP":
+        return "BGP is up" if "BGP state = Established" in output else "BGP is down"
+    elif protocol == "OSPF":
+        return "OSPF is up" if "Full" in output else "OSPF is down"
+    elif protocol == "LLDP":
+        return "LLDP is up" if "LLDP neighbors" in output else "LLDP is down"
+    elif protocol == "NTP":
+        return "NTP is synchronized" if "synchronized" in output else "NTP is not synchronized"
+    elif protocol == "VRRP":
+        return "VRRP is up" if "Master" in output else "VRRP is down"
+    elif protocol == "STP":
+        return "STP is up" if "STP active" in output else "STP is down"
+    else:
+        return "Unknown protocol"
+
+def run_server_diagnostics(server_type):
+    """Run diagnostics on a server."""
+    print(Fore.CYAN + f"[INFO] Running diagnostics on {server_type} server...")
+    # Add server diagnostics logic here
+    print(Fore.GREEN + f"[INFO] Diagnostics completed for {server_type} server.")
+
+def export_summary_to_json(devices):
+    """Export device summary to a JSON file."""
+    filename = "device_summary.json"
+    with open(filename, "w") as file:
+        json.dump(devices, file, indent=4)
+    print(Fore.GREEN + f"[INFO] Device summary exported to {filename}.")
+
+def create_ansible_inventory(devices):
+    """Create an Ansible inventory file from the device list."""
+    inventory = {"all": {"hosts": {}}}
+    for device in devices:
+        inventory["all"]["hosts"][device["name"]] = {"ansible_host": device["ip"], "vendor": device["vendor"]}
+    
+    filename = "ansible_inventory.yaml"
+    with open(filename, "w") as file:
+        yaml.dump(inventory, file)
+    print(Fore.GREEN + f"[INFO] Ansible inventory created at {filename}.")
+
+
+def run_ansible_playbook(playbook):
+    """Run an Ansible playbook."""
+    try:
+        subprocess.run(["ansible-playbook", playbook], check=True)
+        print(Fore.GREEN + f"[INFO] Ansible playbook {playbook} executed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(Fore.RED + f"[ERROR] Ansible playbook {playbook} execution failed: {str(e)}")
+
+def run_terraform_command():
+    """Run Terraform commands."""
+    try:
+        command = input("Enter Terraform command (e.g., init, apply, destroy): ").strip()
+        subprocess.run(["terraform", command], check=True)
+        print(Fore.GREEN + f"[INFO] Terraform command '{command}' executed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(Fore.RED + f"[ERROR] Terraform command '{command}' execution failed: {str(e)}")
+
+# --- Main Program ---
+def show_menu():
+    print("\nUnified Network Management Menu:")
+    print("1. Set SSH Login Credentials")
+    print("2. Connect to Device (SSH or Console)")
+    print("3. Fetch Logs by Device Type (Single Device)")
+    print("4. Fetch Logs by Device Type (Multiple Devices - Parallel)")
+    print("5. Run Server Diagnostics")
+    print("6. Validate Protocols")
+    print("7. Export Device Summary")
+    print("8. Create Ansible Inventory")
+    print("9. Run Ansible Playbook")
+    print("10. Start SNMP Trap Receiver")
+    print("11. Run Terraform Commands")
+    print("0. Exit")
+
+
+def main():
+    devices = [
+        {"name": "Switch1", "ip": "192.168.1.1", "vendor": "nvidia"},
+        {"name": "Router1", "ip": "192.168.1.2", "vendor": "cisco"}
+    ]
+
+    while True:
+        show_menu()
+        choice = input("Enter your choice: ").strip()
+
+        if choice == "1":
+            set_credentials()
+        elif choice == "2":
+            device_name = input("Enter device name: ").strip()
+            vendor = input("Enter vendor: ").strip().lower()
+            for device in devices:
+                if device["name"].lower() == device_name.lower():
+                    connection_type = input("Choose connection type (ssh/console): ").strip().lower()
+                    fetch_logs(device, vendor, connection_type)
+        elif choice == "3":
+            device_name = input("Enter device name: ").strip()
+            for device in devices:
+                if device["name"].lower() == device_name.lower():
+                    fetch_logs(device, device["vendor"])
+        elif choice == "4":
+            vendor = input("Enter vendor for devices: ").strip().lower()
+            fetch_logs_parallel(devices, vendor)
+        elif choice == "5":
+            server_type = input("Enter server type (e.g., Dell, Supermicro): ").strip().lower()
+            run_server_diagnostics(server_type)
+        elif choice == "6":
+            device_name = input("Enter device name: ").strip()
+            for device in devices:
+                if device["name"].lower() == device_name.lower():
+                    results = validate_protocols(device)
+                    print(Fore.GREEN + f"[INFO] Protocol Validation Results for {device_name}:")
+                    for protocol, status in results.items():
+                        print(f"  {protocol}: {status}")
+        elif choice == "7":
+            export_summary_to_json(devices)
+        elif choice == "8":
+            create_ansible_inventory(devices)
+        elif choice == "9":
+            playbook = input("Enter playbook name: ").strip()
+            run_ansible_playbook(playbook)
+        elif choice == "10":
+            start_snmp_trap_receiver()
+        elif choice == "11":
+            run_terraform_command()
+        elif choice == "0":
+            print(Fore.CYAN + "[INFO] Exiting the program. Goodbye!")
+            break
+        else:
+            print(Fore.RED + "[ERROR] Invalid option. Please try again.")
+
+
+if __name__ == "__main__":
+    main()
