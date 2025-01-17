@@ -1,0 +1,3 @@
+Device Name,BGP,OSPF,LLDP,NTP,VRRP,STP,DNS,HTTP
+Switch1,Output of show bgp summary on Switch1,Output of show ip ospf neighbor on Switch1,Output of show lldp neighbors on Switch1,Output of show ntp associations on Switch1,Output of show vrrp on Switch1,Output of show spanning-tree on Switch1,Output of nslookup example.com on Switch1,Output of curl -I http://example.com on Switch1
+Router1,Output of show bgp summary on Router1,Output of show ip ospf neighbor on Router1,Output of show lldp neighbors on Router1,Output of show ntp associations on Router1,Output of show vrrp on Router1,Output of show spanning-tree on Router1,Output of nslookup example.com on Router1,Output of curl -I http://example.com on Router1

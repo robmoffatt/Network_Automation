@@ -1,0 +1,30 @@
+[
+    {
+        "Device Name": "Switch1",
+        "IP Address": "192.168.1.1",
+        "Protocols": {
+            "BGP": "Output of show bgp summary on Switch1",
+            "OSPF": "Output of show ip ospf neighbor on Switch1",
+            "LLDP": "Output of show lldp neighbors on Switch1",
+            "NTP": "Output of show ntp associations on Switch1",
+            "VRRP": "Output of show vrrp on Switch1",
+            "STP": "Output of show spanning-tree on Switch1",
+            "DNS": "Output of nslookup example.com on Switch1",
+            "HTTP": "Output of curl -I http://example.com on Switch1"
+        }
+    },
+    {
+        "Device Name": "Router1",
+        "IP Address": "192.168.1.2",
+        "Protocols": {
+            "BGP": "Output of show bgp summary on Router1",
+            "OSPF": "Output of show ip ospf neighbor on Router1",
+            "LLDP": "Output of show lldp neighbors on Router1",
+            "NTP": "Output of show ntp associations on Router1",
+            "VRRP": "Output of show vrrp on Router1",
+            "STP": "Output of show spanning-tree on Router1",
+            "DNS": "Output of nslookup example.com on Router1",
+            "HTTP": "Output of curl -I http://example.com on Router1"
+        }
+    }
+]

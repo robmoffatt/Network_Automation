@@ -1,0 +1,7 @@
+all:
+  hosts:
+  - Switch1
+  - Router1
+  vars:
+    ansible_password: password
+    ansible_user: admin
